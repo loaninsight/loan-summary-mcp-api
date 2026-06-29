@@ -1,8 +1,13 @@
 import os
+from collections import defaultdict
+from datetime import date, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+import psycopg2
 from fastmcp import FastMCP
+from psycopg2.extras import RealDictCursor
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -20,11 +25,34 @@ TICKER_ML_API_ENDPOINT = os.getenv(
     "TICKER_ML_API_ENDPOINT",
     "https://ml-rec-74e65f711ec7.herokuapp.com",
 ).rstrip("/")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 MICROSERVICE_GUEST_USERNAME = os.getenv(
     "MICROSERVICE_GUEST_USERNAME",
     "guestMachineUser@ayushisoftware.com",
 )
 MICROSERVICE_GUEST_PASSWORD = os.getenv("MICROSERVICE_GUEST_PASSWORD", "")
+
+LOAN_QUERY = """
+SELECT
+    loan_id,
+    loan_amt,
+    apr,
+    int_rate,
+    mthly_paymt,
+    num_of_yrs,
+    loan_type,
+    loan_denom,
+    email,
+    region,
+    vin,
+    start_date,
+    lender,
+    st,
+    username
+FROM loan
+WHERE lower(email) = lower(%s)
+ORDER BY loan_id
+"""
 
 mcp = FastMCP(
     "Loan Calculator MCP",
@@ -37,6 +65,96 @@ mcp = FastMCP(
 
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _build_summary(loans: list[dict[str, Any]]) -> dict[str, Any]:
+    if not loans:
+        return {
+            "totalAmount": 0.0,
+            "monthlyAmount": 0.0,
+            "loanCount": 0,
+            "maximumNumOfYear": 0,
+            "region": None,
+            "denomination": None,
+            "message": "No loans found for this user.",
+        }
+
+    total_amount = sum(float(loan.get("amount") or 0) for loan in loans)
+    monthly_amount = sum(float(loan.get("monthlyPayment") or 0) for loan in loans)
+    max_years = max(int(loan.get("numberOfYears") or 0) for loan in loans)
+
+    return {
+        "totalAmount": round(total_amount, 2),
+        "monthlyAmount": round(monthly_amount, 2),
+        "loanCount": len(loans),
+        "maximumNumOfYear": max_years,
+        "region": loans[0].get("region"),
+        "denomination": loans[0].get("loanDenomination"),
+    }
+
+
+def _build_category_summary(loans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"loanType": "", "count": 0, "totalAmount": 0.0}
+    )
+    for loan in loans:
+        loan_type = loan.get("loanType") or "Unknown"
+        entry = grouped[loan_type]
+        entry["loanType"] = loan_type
+        entry["count"] += 1
+        entry["totalAmount"] = round(
+            float(entry["totalAmount"]) + float(loan.get("amount") or 0),
+            2,
+        )
+    return list(grouped.values())
+
+
+def fetch_loans_summary_from_db(email: str) -> dict[str, Any]:
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured on the server")
+
+    with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(LOAN_QUERY, (email,))
+            rows = cursor.fetchall()
+
+    loans: list[dict[str, Any]] = []
+    for row in rows:
+        loans.append(
+            {
+                "loanId": row["loan_id"],
+                "name": row.get("username"),
+                "lender": row.get("lender"),
+                "state": row.get("st"),
+                "region": row.get("region"),
+                "amount": float(row.get("loan_amt") or 0),
+                "apr": float(row.get("apr") or 0),
+                "interestRate": float(row.get("int_rate") or 0),
+                "monthlyPayment": float(row.get("mthly_paymt") or 0),
+                "numberOfYears": int(row.get("num_of_yrs") or 0),
+                "loanType": row.get("loan_type"),
+                "loanDenomination": row.get("loan_denom"),
+                "email": row.get("email"),
+                "vin": row.get("vin"),
+                "startDate": _serialize_value(row.get("start_date")),
+            }
+        )
+
+    return {
+        "success": True,
+        "email": email,
+        "loanCount": len(loans),
+        "loans": loans,
+        "categorySummary": _build_category_summary(loans),
+        "summary": _build_summary(loans),
+        "source": "postgres-database",
+    }
 
 
 async def _microservice_login(client: httpx.AsyncClient) -> str:
@@ -59,14 +177,15 @@ async def _microservice_login(client: httpx.AsyncClient) -> str:
 
 
 async def fetch_loans_summary(email: str) -> dict[str, Any]:
-    """Fetch loan summary from the main website API, with graph-service fallback."""
     email = email.strip()
     if not email:
         raise ValueError("email is required")
 
+    if DATABASE_URL:
+        return fetch_loans_summary_from_db(email)
+
     async with _client() as client:
         token = await _microservice_login(client)
-
         graph_response = await client.get(
             f"{MICROSERVICE_HOST_URL}/graph/graph",
             params={"userEmail": email},
@@ -75,34 +194,31 @@ async def fetch_loans_summary(email: str) -> dict[str, Any]:
         graph_response.raise_for_status()
         graph_data = graph_response.json()
 
-        loan_table = graph_data.get("loanTable") or []
-        loan_graph = graph_data.get("loanGraph") or []
+    loan_table = graph_data.get("loanTable") or []
+    loan_graph = graph_data.get("loanGraph") or []
+    total_amount = sum(float(item.get("amount", 0) or 0) for item in loan_table)
 
-        total_amount = sum(float(item.get("amount", 0) or 0) for item in loan_table)
-        category_summary = []
-        for item in loan_graph:
-            category_summary.append(
-                {
-                    "loanType": item.get("loanName"),
-                    "totalAmount": item.get("amount"),
-                    "loanPercentage": item.get("loanPercentage"),
-                    "loanDenomination": item.get("loanDenomination"),
-                }
-            )
-
-        return {
-            "success": True,
-            "email": email,
+    return {
+        "success": True,
+        "email": email,
+        "loanCount": len(loan_table),
+        "loans": loan_table,
+        "categorySummary": [
+            {
+                "loanType": item.get("loanName"),
+                "totalAmount": item.get("amount"),
+                "loanPercentage": item.get("loanPercentage"),
+                "loanDenomination": item.get("loanDenomination"),
+            }
+            for item in loan_graph
+        ],
+        "summary": {
+            "totalAmount": total_amount,
             "loanCount": len(loan_table),
-            "loans": loan_table,
-            "categorySummary": category_summary,
-            "summary": {
-                "totalAmount": total_amount,
-                "loanCount": len(loan_table),
-                "message": "Summary generated from graph microservice",
-            },
-            "source": "graph-microservice",
-        }
+            "message": "Summary generated from graph microservice",
+        },
+        "source": "graph-microservice",
+    }
 
 
 @mcp.tool()
@@ -169,17 +285,23 @@ async def get_ticker_feed(user_id: str = "") -> dict[str, Any]:
 
 
 async def health(_: Request) -> JSONResponse:
+    database_configured = bool(DATABASE_URL)
+    database_host = None
+    if database_configured:
+        database_host = urlparse(DATABASE_URL).hostname
+
     return JSONResponse(
         {
             "status": "ok",
-            "service": "python-mcp-server",
+            "service": "loan-summary-mcp-api",
             "endpoints": {
                 "health": "/health",
                 "loan_summary": "/api/loans/summary?email=USER_EMAIL",
                 "mcp": "/mcp",
             },
             "website": LOANCALCULATOR_BASE_URL,
-            "microservice": MICROSERVICE_HOST_URL,
+            "databaseConfigured": database_configured,
+            "databaseHost": database_host,
         }
     )
 

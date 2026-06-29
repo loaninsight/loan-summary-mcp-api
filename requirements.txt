@@ -1,5 +1,6 @@
 fastmcp
 httpx
+psycopg2-binary
 uvicorn[standard]
 gunicorn
 uvicorn-worker
