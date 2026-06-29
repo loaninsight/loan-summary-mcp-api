@@ -1,4 +1,4 @@
-# Endpoints for Gagan — Loan Summary MCP Service
+# Endpoints — Loan Summary MCP Service
 
 This is a **separate repo/service**. It does not modify `loancalculatorapp`.
 
