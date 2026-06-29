@@ -40,25 +40,6 @@ curl "https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/loans/summary?
 | `summary` | Aggregated totals |
 | `source` | Always `graph-microservice` |
 
-## 3. MCP endpoint (for AI clients)
-
-```
-POST /mcp
-```
-
-Cursor / Claude MCP URL:
-
-```
-https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/mcp
-```
-
-MCP tools available:
-
-- `get_loans_summary`
-- `calculate_loan`
-- `check_website_health`
-- `get_ticker_feed`
-
 ## Required Heroku config
 
 | Variable | Value |
