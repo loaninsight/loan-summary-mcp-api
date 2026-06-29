@@ -1,0 +1,5 @@
+fastmcp
+httpx
+uvicorn[standard]
+gunicorn
+uvicorn-worker
