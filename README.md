@@ -6,7 +6,7 @@ This repo is **separate from** `loancalculatorapp`. It calls the existing micros
 
 ## Live endpoints
 
-Base URL: `https://loan-summary-mcp-api.herokuapp.com`
+Base URL: `https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com`
 
 | Purpose | Method | URL |
 |---|---|---|
