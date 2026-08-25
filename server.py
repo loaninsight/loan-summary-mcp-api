@@ -9,6 +9,8 @@ import psycopg2
 from fastmcp import FastMCP
 from psycopg2.extras import RealDictCursor
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -333,6 +335,16 @@ async def loan_summary_api(request: Request) -> JSONResponse:
         )
 
 
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "https://www.loaninsight.online,https://loaninsight.online,"
+        "https://loan-insight-0c7ad1574458.herokuapp.com,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 mcp_app = mcp.http_app(path="/mcp", transport="streamable-http", stateless_http=True)
 app = Starlette(
     routes=[
@@ -340,7 +352,15 @@ app = Starlette(
         Route("/health", health),
         Route("/api/loans/summary", loan_summary_api, methods=["GET"]),
         Mount("/", app=mcp_app),
-    ]
+    ],
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=CORS_ORIGINS,
+            allow_methods=["GET", "OPTIONS"],
+            allow_headers=["*"],
+        )
+    ],
 )
 
 

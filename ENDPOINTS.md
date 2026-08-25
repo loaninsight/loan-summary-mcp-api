@@ -49,6 +49,17 @@ curl "https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/loans/summary?
 | `MICROSERVICE_GUEST_USERNAME` | `guestMachineUser@ayushisoftware.com` |
 | `MICROSERVICE_GUEST_PASSWORD` | guest machine password (must be set on Heroku) |
 | `TICKER_ML_API_ENDPOINT` | `https://ml-rec-74e65f711ec7.herokuapp.com` |
+| `CORS_ALLOW_ORIGINS` | optional; defaults include `https://www.loaninsight.online` |
+
+## Browser / React usage
+
+Marketing site charts call:
+
+```
+GET /api/loans/summary?email=guestMachineUser@ayushisoftware.com
+```
+
+CORS is enabled for `www.loaninsight.online` so the React frontend can `fetch` this endpoint from the browser (same pattern as `LoanWebService.java` HTTP calls, but client-side).
 
 ## GitHub repo
 
