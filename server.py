@@ -1,3 +1,4 @@
+import math
 import os
 from collections import defaultdict
 from datetime import date, datetime
@@ -128,6 +129,16 @@ def _build_category_summary(loans: list[dict[str, Any]]) -> list[dict[str, Any]]
     return list(grouped.values())
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return number
+
+
 def _loan_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "loanId": row["loan_id"],
@@ -135,10 +146,10 @@ def _loan_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "lender": row.get("lender"),
         "state": row.get("st"),
         "region": row.get("region"),
-        "amount": float(row.get("loan_amt") or 0),
-        "apr": float(row.get("apr") or 0),
-        "interestRate": float(row.get("int_rate") or 0),
-        "monthlyPayment": float(row.get("mthly_paymt") or 0),
+        "amount": _safe_float(row.get("loan_amt")),
+        "apr": _safe_float(row.get("apr")),
+        "interestRate": _safe_float(row.get("int_rate")),
+        "monthlyPayment": _safe_float(row.get("mthly_paymt")),
         "numberOfYears": int(row.get("num_of_yrs") or 0),
         "loanType": row.get("loan_type"),
         "loanDenomination": row.get("loan_denom"),
