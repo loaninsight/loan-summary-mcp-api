@@ -22,9 +22,13 @@ Returns all existing loans + summary totals for a user.
 
 ```
 GET /api/loans/summary?email=USER_EMAIL
+GET /api/loans/summary?email=all
 ```
 
+Use `email=all` on the non-authenticated marketing site to aggregate every loan in the database.
+
 ```bash
+curl "https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/loans/summary?email=all"
 curl "https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/loans/summary?email=guestMachineUser@ayushisoftware.com"
 ```
 

@@ -34,8 +34,7 @@ MICROSERVICE_GUEST_USERNAME = os.getenv(
 )
 MICROSERVICE_GUEST_PASSWORD = os.getenv("MICROSERVICE_GUEST_PASSWORD", "")
 
-LOAN_QUERY = """
-SELECT
+LOAN_COLUMNS = """
     loan_id,
     loan_amt,
     apr,
@@ -51,8 +50,20 @@ SELECT
     lender,
     st,
     username
+"""
+
+LOAN_QUERY = f"""
+SELECT
+{LOAN_COLUMNS}
 FROM loan
 WHERE lower(email) = lower(%s)
+ORDER BY loan_id
+"""
+
+LOAN_QUERY_ALL = f"""
+SELECT
+{LOAN_COLUMNS}
+FROM loan
 ORDER BY loan_id
 """
 
@@ -117,40 +128,44 @@ def _build_category_summary(loans: list[dict[str, Any]]) -> list[dict[str, Any]]
     return list(grouped.values())
 
 
+def _loan_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "loanId": row["loan_id"],
+        "name": row.get("username"),
+        "lender": row.get("lender"),
+        "state": row.get("st"),
+        "region": row.get("region"),
+        "amount": float(row.get("loan_amt") or 0),
+        "apr": float(row.get("apr") or 0),
+        "interestRate": float(row.get("int_rate") or 0),
+        "monthlyPayment": float(row.get("mthly_paymt") or 0),
+        "numberOfYears": int(row.get("num_of_yrs") or 0),
+        "loanType": row.get("loan_type"),
+        "loanDenomination": row.get("loan_denom"),
+        "email": row.get("email"),
+        "vin": row.get("vin"),
+        "startDate": _serialize_value(row.get("start_date")),
+    }
+
+
 def fetch_loans_summary_from_db(email: str) -> dict[str, Any]:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not configured on the server")
 
+    query_all = email.lower() == "all"
     with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(LOAN_QUERY, (email,))
+            if query_all:
+                cursor.execute(LOAN_QUERY_ALL)
+            else:
+                cursor.execute(LOAN_QUERY, (email,))
             rows = cursor.fetchall()
 
-    loans: list[dict[str, Any]] = []
-    for row in rows:
-        loans.append(
-            {
-                "loanId": row["loan_id"],
-                "name": row.get("username"),
-                "lender": row.get("lender"),
-                "state": row.get("st"),
-                "region": row.get("region"),
-                "amount": float(row.get("loan_amt") or 0),
-                "apr": float(row.get("apr") or 0),
-                "interestRate": float(row.get("int_rate") or 0),
-                "monthlyPayment": float(row.get("mthly_paymt") or 0),
-                "numberOfYears": int(row.get("num_of_yrs") or 0),
-                "loanType": row.get("loan_type"),
-                "loanDenomination": row.get("loan_denom"),
-                "email": row.get("email"),
-                "vin": row.get("vin"),
-                "startDate": _serialize_value(row.get("start_date")),
-            }
-        )
+    loans = [_loan_row_to_dict(row) for row in rows]
 
     return {
         "success": True,
-        "email": email,
+        "email": "all" if query_all else email,
         "loanCount": len(loans),
         "loans": loans,
         "categorySummary": _build_category_summary(loans),
@@ -182,6 +197,13 @@ async def fetch_loans_summary(email: str) -> dict[str, Any]:
     email = email.strip()
     if not email:
         raise ValueError("email is required")
+
+    if email.lower() == "all":
+        if not DATABASE_URL:
+            raise ValueError(
+                "email=all requires DATABASE_URL; aggregate queries are database-only"
+            )
+        return fetch_loans_summary_from_db("all")
 
     if DATABASE_URL:
         return fetch_loans_summary_from_db(email)
@@ -298,7 +320,7 @@ async def health(_: Request) -> JSONResponse:
             "service": "loan-summary-mcp-api",
             "endpoints": {
                 "health": "/health",
-                "loan_summary": "/api/loans/summary?email=USER_EMAIL",
+                "loan_summary": "/api/loans/summary?email=USER_EMAIL_OR_all",
                 "mcp": "/mcp",
             },
             "website": LOANCALCULATOR_BASE_URL,
