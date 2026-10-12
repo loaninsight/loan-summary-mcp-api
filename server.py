@@ -72,7 +72,8 @@ mcp = FastMCP(
     "Loan Calculator MCP",
     instructions=(
         "MCP server for the LoanCalculator website. Use these tools to check site "
-        "health, fetch loan summaries, call loan microservices, and fetch ticker data."
+        "health, fetch loan summaries, user activity, system stats, call loan "
+        "microservices, and fetch ticker data."
     ),
 )
 
@@ -319,6 +320,225 @@ async def get_ticker_feed(user_id: str = "") -> dict[str, Any]:
         return response.json()
 
 
+def _require_database() -> None:
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured on the server")
+
+
+def _scalar_count(cursor, connection, sql: str, default: int = 0) -> int:
+    try:
+        cursor.execute(sql)
+        row = cursor.fetchone()
+        if not row:
+            return default
+        return int(row["count"] or 0)
+    except Exception:
+        connection.rollback()
+        return default
+
+
+def _fill_buckets(
+    cursor, connection, sql: str, key: str, buckets: list[int], offset: int = 0
+) -> None:
+    try:
+        cursor.execute(sql)
+        for row in cursor.fetchall():
+            idx = int(row[key]) + offset
+            if 0 <= idx < len(buckets):
+                buckets[idx] = int(row["count"] or 0)
+    except Exception:
+        connection.rollback()
+
+
+def fetch_user_activity_from_db() -> dict[str, Any]:
+    _require_database()
+
+    monthly_new_adopters = [0] * 12
+    monthly_active_users = [0] * 12
+    weekly_new_adopters = [0] * 12
+    weekly_active_users = [0] * 12
+    daily_new_adopters = [0] * 7
+    daily_active_users = [0] * 7
+
+    with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
+        with connection.cursor() as cursor:
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(MONTH FROM registration_start_date) as month, COUNT(*) as count
+                FROM user_account_info
+                WHERE EXTRACT(YEAR FROM registration_start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+                GROUP BY month
+                """,
+                "month",
+                monthly_new_adopters,
+                offset=-1,
+            )
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(MONTH FROM to_timestamp(last_access_time / 1000.0)) as month,
+                       COUNT(DISTINCT principal_name) as count
+                FROM spring_session
+                WHERE EXTRACT(YEAR FROM to_timestamp(last_access_time / 1000.0))
+                      = EXTRACT(YEAR FROM CURRENT_DATE)
+                GROUP BY month
+                """,
+                "month",
+                monthly_active_users,
+                offset=-1,
+            )
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(WEEK FROM registration_start_date) as week, COUNT(*) as count
+                FROM user_account_info
+                WHERE EXTRACT(YEAR FROM registration_start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+                GROUP BY week
+                """,
+                "week",
+                weekly_new_adopters,
+                offset=-1,
+            )
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(WEEK FROM to_timestamp(last_access_time / 1000.0)) as week,
+                       COUNT(DISTINCT principal_name) as count
+                FROM spring_session
+                WHERE EXTRACT(YEAR FROM to_timestamp(last_access_time / 1000.0))
+                      = EXTRACT(YEAR FROM CURRENT_DATE)
+                GROUP BY week
+                """,
+                "week",
+                weekly_active_users,
+                offset=-1,
+            )
+            # PostgreSQL DOW: 0=Sunday … 6=Saturday (matches chart labels).
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(DOW FROM registration_start_date) as dow, COUNT(*) as count
+                FROM user_account_info
+                WHERE registration_start_date >= CURRENT_DATE - INTERVAL '6 days'
+                GROUP BY dow
+                """,
+                "dow",
+                daily_new_adopters,
+            )
+            _fill_buckets(
+                cursor,
+                connection,
+                """
+                SELECT EXTRACT(DOW FROM to_timestamp(last_access_time / 1000.0)) as dow,
+                       COUNT(DISTINCT principal_name) as count
+                FROM spring_session
+                WHERE to_timestamp(last_access_time / 1000.0) >= CURRENT_DATE - INTERVAL '6 days'
+                GROUP BY dow
+                """,
+                "dow",
+                daily_active_users,
+            )
+
+    return {
+        "success": True,
+        "source": "postgres-database",
+        "activityData": {
+            "Monthly": {
+                "activeUsers": monthly_active_users,
+                "newAdopters": monthly_new_adopters,
+            },
+            "Weekly": {
+                "activeUsers": weekly_active_users,
+                "newAdopters": weekly_new_adopters,
+            },
+            "Daily": {
+                "activeUsers": daily_active_users,
+                "newAdopters": daily_new_adopters,
+            },
+        },
+    }
+
+
+@mcp.tool()
+async def get_user_activity() -> dict[str, Any]:
+    """Fetch user activity (active users and new adopters) for graphs."""
+    return fetch_user_activity_from_db()
+
+
+async def user_activity_api(_: Request) -> JSONResponse:
+    try:
+        return JSONResponse(fetch_user_activity_from_db())
+    except Exception as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=500)
+
+
+def fetch_system_stats_from_db() -> dict[str, Any]:
+    _require_database()
+
+    with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
+        with connection.cursor() as cursor:
+            active_users = _scalar_count(
+                cursor,
+                connection,
+                "SELECT COUNT(DISTINCT principal_name) as count FROM spring_session",
+            )
+            calculations = _scalar_count(
+                cursor, connection, "SELECT COUNT(*) as count FROM loanapp"
+            )
+            loans_analyzed = _scalar_count(
+                cursor, connection, "SELECT COUNT(*) as count FROM loan"
+            )
+            top_loan_count = 0
+            top_loan_name = "Unknown"
+            try:
+                cursor.execute(
+                    """
+                    SELECT loan_type, COUNT(*) as count
+                    FROM loan
+                    GROUP BY loan_type
+                    ORDER BY count DESC
+                    LIMIT 1
+                    """
+                )
+                top_loan_row = cursor.fetchone()
+                if top_loan_row:
+                    top_loan_count = int(top_loan_row["count"] or 0)
+                    top_loan_name = top_loan_row["loan_type"] or "Unknown"
+            except Exception:
+                connection.rollback()
+
+    return {
+        "success": True,
+        "source": "postgres-database",
+        "stats": {
+            "activeUsers": active_users,
+            "calculations": calculations,
+            "loansAnalyzed": loans_analyzed,
+            "topLoanCount": top_loan_count,
+            "topLoanName": top_loan_name,
+        },
+    }
+
+
+@mcp.tool()
+async def get_system_stats() -> dict[str, Any]:
+    """Fetch high-level system statistics like total active users and loan counts."""
+    return fetch_system_stats_from_db()
+
+
+async def system_stats_api(_: Request) -> JSONResponse:
+    try:
+        return JSONResponse(fetch_system_stats_from_db())
+    except Exception as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=500)
+
+
 async def health(_: Request) -> JSONResponse:
     database_configured = bool(DATABASE_URL)
     database_host = None
@@ -332,6 +552,8 @@ async def health(_: Request) -> JSONResponse:
             "endpoints": {
                 "health": "/health",
                 "loan_summary": "/api/loans/summary?email=USER_EMAIL_OR_all",
+                "user_activity": "/api/users/activity",
+                "system_stats": "/api/system/stats",
                 "mcp": "/mcp",
             },
             "website": LOANCALCULATOR_BASE_URL,
@@ -384,6 +606,8 @@ app = Starlette(
         Route("/", health),
         Route("/health", health),
         Route("/api/loans/summary", loan_summary_api, methods=["GET"]),
+        Route("/api/users/activity", user_activity_api, methods=["GET"]),
+        Route("/api/system/stats", system_stats_api, methods=["GET"]),
         Mount("/", app=mcp_app),
     ],
     middleware=[

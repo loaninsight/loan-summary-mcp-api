@@ -16,7 +16,38 @@ GET /health
 curl https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/health
 ```
 
-## 2. Loan summary (main test endpoint)
+## 2. User activity (marketing charts)
+
+Active users and new adopters for Daily / Weekly / Monthly series.
+
+```
+GET /api/users/activity
+```
+
+```bash
+curl https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/users/activity
+```
+
+`Daily` is Sunday–Saturday (7 points). `Weekly` / `Monthly` are the first 12 ISO weeks and calendar months of the current year.
+
+## 3. System stats (hero tiles)
+
+```
+GET /api/system/stats
+```
+
+```bash
+curl https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/system/stats
+```
+
+| Field | Description |
+|---|---|
+| `stats.activeUsers` | Distinct `spring_session.principal_name` |
+| `stats.calculations` | Rows in `loanapp` |
+| `stats.loansAnalyzed` | Rows in `loan` |
+| `stats.topLoanCount` / `topLoanName` | Most common `loan.loan_type` |
+
+## 4. Loan summary (main test endpoint)
 
 Returns all existing loans + summary totals for a user.
 
@@ -60,7 +91,9 @@ curl "https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/loans/summary?
 Marketing site charts call:
 
 ```
-GET /api/loans/summary?email=guestMachineUser@ayushisoftware.com
+GET /api/loans/summary?email=all
+GET /api/users/activity
+GET /api/system/stats
 ```
 
 CORS is enabled for `www.loaninsight.online` so the React frontend can `fetch` this endpoint from the browser (same pattern as `LoanWebService.java` HTTP calls, but client-side).
