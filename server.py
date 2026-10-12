@@ -483,10 +483,11 @@ def fetch_system_stats_from_db() -> dict[str, Any]:
 
     with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
         with connection.cursor() as cursor:
+            # Registered accounts, not currently-open Spring sessions.
             active_users = _scalar_count(
                 cursor,
                 connection,
-                "SELECT COUNT(DISTINCT principal_name) as count FROM spring_session",
+                "SELECT COUNT(*) as count FROM user_account_info",
             )
             calculations = _scalar_count(
                 cursor, connection, "SELECT COUNT(*) as count FROM loanapp"

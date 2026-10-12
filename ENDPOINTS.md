@@ -42,7 +42,7 @@ curl https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/system/stats
 
 | Field | Description |
 |---|---|
-| `stats.activeUsers` | Distinct `spring_session.principal_name` |
+| `stats.activeUsers` | Rows in `user_account_info` (registered users) |
 | `stats.calculations` | Rows in `loanapp` |
 | `stats.loansAnalyzed` | Rows in `loan` |
 | `stats.topLoanCount` / `topLoanName` | Most common `loan.loan_type` |
