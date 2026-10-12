@@ -28,7 +28,9 @@ GET /api/users/activity
 curl https://loan-summary-mcp-api-5f08d324cefc.herokuapp.com/api/users/activity
 ```
 
-`Daily` is Sunday–Saturday (7 points). `Weekly` / `Monthly` are the first 12 ISO weeks and calendar months of the current year.
+`Daily` is Sunday–Saturday (last 7 days). `Weekly` is the last 12 weeks (W1 oldest). `Monthly` is calendar months of the current year.
+
+`newAdopters` are new `user_account_info` rows in each bucket. `activeUsers` is the running total of those registrations in the visible window (Spring Session is not used; it only stores current logins).
 
 ## 3. System stats (hero tiles)
 

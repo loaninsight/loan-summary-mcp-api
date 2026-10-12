@@ -350,15 +350,28 @@ def _fill_buckets(
         connection.rollback()
 
 
+def _cumulative(values: list[int]) -> list[int]:
+    running = 0
+    totals: list[int] = []
+    for value in values:
+        running += value
+        totals.append(running)
+    return totals
+
+
 def fetch_user_activity_from_db() -> dict[str, Any]:
+    """Chart series from user_account_info.
+
+    New adopters = registrations in each bucket.
+    Active users = running total of those registrations in the visible window.
+    spring_session is not used: it only holds current logins, so one line was always ~0.
+    Weekly buckets are the last 12 weeks (W1 oldest), not ISO weeks 1–12 of the year.
+    """
     _require_database()
 
     monthly_new_adopters = [0] * 12
-    monthly_active_users = [0] * 12
     weekly_new_adopters = [0] * 12
-    weekly_active_users = [0] * 12
     daily_new_adopters = [0] * 7
-    daily_active_users = [0] * 7
 
     with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as connection:
         with connection.cursor() as cursor:
@@ -375,50 +388,29 @@ def fetch_user_activity_from_db() -> dict[str, Any]:
                 monthly_new_adopters,
                 offset=-1,
             )
-            _fill_buckets(
-                cursor,
-                connection,
-                """
-                SELECT EXTRACT(MONTH FROM to_timestamp(last_access_time / 1000.0)) as month,
-                       COUNT(DISTINCT principal_name) as count
-                FROM spring_session
-                WHERE EXTRACT(YEAR FROM to_timestamp(last_access_time / 1000.0))
-                      = EXTRACT(YEAR FROM CURRENT_DATE)
-                GROUP BY month
-                """,
-                "month",
-                monthly_active_users,
-                offset=-1,
-            )
-            _fill_buckets(
-                cursor,
-                connection,
-                """
-                SELECT EXTRACT(WEEK FROM registration_start_date) as week, COUNT(*) as count
-                FROM user_account_info
-                WHERE EXTRACT(YEAR FROM registration_start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
-                GROUP BY week
-                """,
-                "week",
-                weekly_new_adopters,
-                offset=-1,
-            )
-            _fill_buckets(
-                cursor,
-                connection,
-                """
-                SELECT EXTRACT(WEEK FROM to_timestamp(last_access_time / 1000.0)) as week,
-                       COUNT(DISTINCT principal_name) as count
-                FROM spring_session
-                WHERE EXTRACT(YEAR FROM to_timestamp(last_access_time / 1000.0))
-                      = EXTRACT(YEAR FROM CURRENT_DATE)
-                GROUP BY week
-                """,
-                "week",
-                weekly_active_users,
-                offset=-1,
-            )
-            # PostgreSQL DOW: 0=Sunday … 6=Saturday (matches chart labels).
+            # 0 = current week, 11 = eleven weeks ago → chart W1 is oldest.
+            try:
+                cursor.execute(
+                    """
+                    SELECT
+                      (
+                        date_trunc('week', CURRENT_DATE)::date
+                        - date_trunc('week', registration_start_date)::date
+                      ) / 7 as weeks_ago,
+                      COUNT(*) as count
+                    FROM user_account_info
+                    WHERE registration_start_date
+                          >= date_trunc('week', CURRENT_DATE) - INTERVAL '11 weeks'
+                    GROUP BY 1
+                    """
+                )
+                for row in cursor.fetchall():
+                    weeks_ago = int(row["weeks_ago"])
+                    idx = 11 - weeks_ago
+                    if 0 <= idx < 12:
+                        weekly_new_adopters[idx] = int(row["count"] or 0)
+            except Exception:
+                connection.rollback()
             _fill_buckets(
                 cursor,
                 connection,
@@ -431,34 +423,21 @@ def fetch_user_activity_from_db() -> dict[str, Any]:
                 "dow",
                 daily_new_adopters,
             )
-            _fill_buckets(
-                cursor,
-                connection,
-                """
-                SELECT EXTRACT(DOW FROM to_timestamp(last_access_time / 1000.0)) as dow,
-                       COUNT(DISTINCT principal_name) as count
-                FROM spring_session
-                WHERE to_timestamp(last_access_time / 1000.0) >= CURRENT_DATE - INTERVAL '6 days'
-                GROUP BY dow
-                """,
-                "dow",
-                daily_active_users,
-            )
 
     return {
         "success": True,
         "source": "postgres-database",
         "activityData": {
             "Monthly": {
-                "activeUsers": monthly_active_users,
+                "activeUsers": _cumulative(monthly_new_adopters),
                 "newAdopters": monthly_new_adopters,
             },
             "Weekly": {
-                "activeUsers": weekly_active_users,
+                "activeUsers": _cumulative(weekly_new_adopters),
                 "newAdopters": weekly_new_adopters,
             },
             "Daily": {
-                "activeUsers": daily_active_users,
+                "activeUsers": _cumulative(daily_new_adopters),
                 "newAdopters": daily_new_adopters,
             },
         },
